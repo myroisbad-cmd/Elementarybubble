@@ -13,9 +13,12 @@ pygame.init()
 SCREEN_WIDTH = 1080
 SCREEN_HEIGHT = 1920
 FPS = 60
-GAME_DURATION = 61.0  # 1 minute 1 seconde
-DISRUPTION_INTERVAL = 12.0  # Toutes les 12 secondes
-BONUS_SPAWN_INTERVAL = 8.0  # Bonus toutes les 8 secondes
+
+class GameState(Enum):
+    MENU = "menu"
+    PLAYING = "playing"
+    GAME_OVER = "game_over"
+    PAUSED = "paused"
 
 class BallType(Enum):
     FIRE = "fire"
@@ -128,79 +131,121 @@ class Arena:
         ]
     
     def check_collision(self, ball):
+        """Amélioration majeure de la détection de collision pour éviter que les balles traversent les murs"""
         collided = False
-        for wall in self.walls:
-            if self.ball_wall_collision(ball, wall):
-                collided = True
+        collision_count = 0
+        
+        # Vérifier plusieurs fois pour éviter les traversées
+        for _ in range(3):  # Multiple passes pour une meilleure détection
+            for wall in self.walls:
+                if self.ball_wall_collision(ball, wall):
+                    collided = True
+                    collision_count += 1
+                    
+        # Si trop de collisions, repositionner vers le centre
+        if collision_count > 1:
+            center_x, center_y = self.center_x, self.center_y + 200
+            dx = center_x - ball.x
+            dy = center_y - ball.y
+            dist = math.sqrt(dx*dx + dy*dy)
+            if dist > 0:
+                # Pousser vers le centre
+                ball.x += (dx / dist) * 5
+                ball.y += (dy / dist) * 5
+                
         return collided
     
     def ball_wall_collision(self, ball, wall):
+        """Détection de collision améliorée avec prédiction de position"""
         (x1, y1), (x2, y2) = wall
         
-        # Vecteur du mur
-        wall_dx = x2 - x1
-        wall_dy = y2 - y1
-        wall_length = math.sqrt(wall_dx*wall_dx + wall_dy*wall_dy)
+        # Position actuelle et future de la balle
+        future_x = ball.x + ball.vx * 0.016  # Prédiction 1 frame ahead
+        future_y = ball.y + ball.vy * 0.016
         
-        if wall_length == 0:
-            return False
-        
-        # Vecteur normal au mur
-        normal_x = -wall_dy / wall_length
-        normal_y = wall_dx / wall_length
-        
-        # Distance du centre de la balle au mur
-        to_ball_x = ball.x - x1
-        to_ball_y = ball.y - y1
-        
-        # Projection sur le mur
-        wall_projection = (to_ball_x * wall_dx + to_ball_y * wall_dy) / wall_length
-        
-        # Point le plus proche sur le mur
-        if wall_projection < 0:
-            closest_x, closest_y = x1, y1
-        elif wall_projection > wall_length:
-            closest_x, closest_y = x2, y2
-        else:
-            closest_x = x1 + (wall_projection / wall_length) * wall_dx
-            closest_y = y1 + (wall_projection / wall_length) * wall_dy
-        
-        # Distance à ce point
-        dist_x = ball.x - closest_x
-        dist_y = ball.y - closest_y
-        distance = math.sqrt(dist_x*dist_x + dist_y*dist_y)
-        
-        if distance <= ball.radius:
-            # Collision détectée - rebond
-            if distance > 0:
-                # Normaliser le vecteur de collision
-                norm_x = dist_x / distance
-                norm_y = dist_y / distance
-                
-                # Repositionner la balle
-                ball.x = closest_x + norm_x * ball.radius
-                ball.y = closest_y + norm_y * ball.radius
-                
-                # Calculer la nouvelle vitesse (réflexion)
-                dot_product = ball.vx * norm_x + ball.vy * norm_y
-                ball.vx = ball.vx - 2 * dot_product * norm_x
-                ball.vy = ball.vy - 2 * dot_product * norm_y
-                
-                # ACCÉLÉRATION À CHAQUE REBOND !
-                speed_multiplier = 1.15  # +15% de vitesse
-                ball.vx *= speed_multiplier
-                ball.vy *= speed_multiplier
-                
-                # Limiter la vitesse maximale
-                max_speed = 800
-                current_speed = math.sqrt(ball.vx*ball.vx + ball.vy*ball.vy)
-                if current_speed > max_speed:
-                    ball.vx = (ball.vx / current_speed) * max_speed
-                    ball.vy = (ball.vy / current_speed) * max_speed
-                
-                return True
+        # Vérifier la collision avec la position future
+        for pos_x, pos_y in [(ball.x, ball.y), (future_x, future_y)]:
+            # Vecteur du mur
+            wall_dx = x2 - x1
+            wall_dy = y2 - y1
+            wall_length = math.sqrt(wall_dx*wall_dx + wall_dy*wall_dy)
+            
+            if wall_length == 0:
+                continue
+            
+            # Distance du centre de la balle au mur
+            to_ball_x = pos_x - x1
+            to_ball_y = pos_y - y1
+            
+            # Projection sur le mur
+            wall_projection = (to_ball_x * wall_dx + to_ball_y * wall_dy) / wall_length
+            
+            # Point le plus proche sur le mur
+            if wall_projection < 0:
+                closest_x, closest_y = x1, y1
+            elif wall_projection > wall_length:
+                closest_x, closest_y = x2, y2
+            else:
+                closest_x = x1 + (wall_projection / wall_length) * wall_dx
+                closest_y = y1 + (wall_projection / wall_length) * wall_dy
+            
+            # Distance à ce point
+            dist_x = pos_x - closest_x
+            dist_y = pos_y - closest_y
+            distance = math.sqrt(dist_x*dist_x + dist_y*dist_y)
+            
+            if distance <= ball.radius + 2:  # Petite marge de sécurité
+                # Collision détectée - repositionner d'abord
+                if distance > 0:
+                    # Normaliser le vecteur de collision
+                    norm_x = dist_x / distance
+                    norm_y = dist_y / distance
+                    
+                    # Repositionner la balle avec marge de sécurité
+                    safety_margin = 3
+                    ball.x = closest_x + norm_x * (ball.radius + safety_margin)
+                    ball.y = closest_y + norm_y * (ball.radius + safety_margin)
+                    
+                    # Calculer la nouvelle vitesse (réflexion)
+                    dot_product = ball.vx * norm_x + ball.vy * norm_y
+                    ball.vx = ball.vx - 2 * dot_product * norm_x
+                    ball.vy = ball.vy - 2 * dot_product * norm_y
+                    
+                    # Réduire l'accélération à chaque rebond
+                    speed_multiplier = 1.05  # Réduit de 1.15 à 1.05
+                    ball.vx *= speed_multiplier
+                    ball.vy *= speed_multiplier
+                    
+                    # Limiter la vitesse maximale
+                    max_speed = 600  # Réduit de 800 à 600
+                    current_speed = math.sqrt(ball.vx*ball.vx + ball.vy*ball.vy)
+                    if current_speed > max_speed:
+                        ball.vx = (ball.vx / current_speed) * max_speed
+                        ball.vy = (ball.vy / current_speed) * max_speed
+                    
+                    return True
         
         return False
+    
+    def is_point_inside(self, x, y):
+        """Vérifie si un point est à l'intérieur de l'arène"""
+        center_x, center_y = self.center_x, self.center_y + 200
+        
+        if self.shape_type == "hexagon":
+            radius = 380  # Un peu plus petit pour la vérification
+        elif self.shape_type == "octagon":
+            radius = 360
+        elif self.shape_type == "diamond":
+            # Vérification spéciale pour le diamant
+            dx = abs(x - center_x)
+            dy = abs(y - center_y)
+            return dx/300 + dy/400 < 1
+        else:
+            radius = 350
+            
+        dx = x - center_x
+        dy = y - center_y
+        return math.sqrt(dx*dx + dy*dy) < radius
     
     def draw(self, screen):
         # Dessiner l'arène avec un effet de lueur
@@ -400,6 +445,20 @@ class Ball:
         
         # Vérifier les collisions avec l'arène
         arena.check_collision(self)
+        
+        # Vérifier si la balle est encore dans l'arène et la repositionner si nécessaire
+        if not arena.is_point_inside(self.x, self.y):
+            center_x, center_y = arena.center_x, arena.center_y + 200
+            dx = center_x - self.x
+            dy = center_y - self.y
+            dist = math.sqrt(dx*dx + dy*dy)
+            if dist > 0:
+                # Repositionner vers le centre
+                self.x = center_x + (dx / dist) * 200
+                self.y = center_y + (dy / dist) * 200
+                # Inverser la vitesse
+                self.vx *= -0.5
+                self.vy *= -0.5
         
         # Effets des perturbations
         for disruption in disruptions:
@@ -676,67 +735,414 @@ class Disruption:
             if random.random() < 0.06:
                 ball.vx += random.uniform(-100, 100)
                 ball.vy += random.uniform(-100, 100)
-        elif self.type == "shape_morph":
-            # Change la forme de l'arène pendant la perturbation
-            pass
+
+class Menu:
+    def __init__(self, screen):
+        self.screen = screen
+        self.font = pygame.font.Font(None, 72)
+        self.menu_font = pygame.font.Font(None, 48)
+        self.small_font = pygame.font.Font(None, 36)
+        
+        # Configuration du jeu
+        self.ball_count = 8
+        self.game_duration = 60.0
+        self.disruption_interval = 12.0
+        self.bonus_spawn_interval = 8.0
+        self.arena_shape = "hexagon"
+        
+        # Options de menu
+        self.selected_option = 0
+        self.options = [
+            "Commencer",
+            "Balles",
+            "Durée",
+            "Perturbations",
+            "Bonus",
+            "Forme Arène",
+            "Quitter"
+        ]
+        
+    def handle_event(self, event):
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_UP:
+                self.selected_option = (self.selected_option - 1) % len(self.options)
+            elif event.key == pygame.K_DOWN:
+                self.selected_option = (self.selected_option + 1) % len(self.options)
+            elif event.key == pygame.K_LEFT:
+                self.adjust_option(-1)
+            elif event.key == pygame.K_RIGHT:
+                self.adjust_option(1)
+            elif event.key == pygame.K_RETURN or event.key == pygame.K_SPACE:
+                return self.handle_selection()
+        return None
+    
+    def adjust_option(self, direction):
+        option = self.options[self.selected_option]
+        
+        if option == "Balles":
+            self.ball_count = max(3, min(25, self.ball_count + direction * 2))
+        elif option == "Durée":
+            self.game_duration = max(30, min(300, self.game_duration + direction * 15))
+        elif option == "Perturbations":
+            self.disruption_interval = max(5, min(30, self.disruption_interval + direction * 3))
+        elif option == "Bonus":
+            self.bonus_spawn_interval = max(3, min(20, self.bonus_spawn_interval + direction * 2))
+        elif option == "Forme Arène":
+            shapes = ["hexagon", "octagon", "diamond"]
+            current_idx = shapes.index(self.arena_shape)
+            new_idx = (current_idx + direction) % len(shapes)
+            self.arena_shape = shapes[new_idx]
+    
+    def handle_selection(self):
+        option = self.options[self.selected_option]
+        
+        if option == "Commencer":
+            return "start_game"
+        elif option == "Quitter":
+            return "quit"
+        return None
+    
+    def draw(self):
+        # Fond dégradé
+        for y in range(0, SCREEN_HEIGHT, 5):
+            gradient_factor = y / SCREEN_HEIGHT
+            wave = math.sin(time.time() * 2 + y * 0.01) * 0.1
+            
+            color_r = max(0, min(255, int(20 * (1 - gradient_factor * 0.4 + wave))))
+            color_g = max(0, min(255, int(30 * (1 - gradient_factor * 0.3 + wave))))
+            color_b = max(0, min(255, int(60 * (1 + gradient_factor * 0.6 + wave))))
+            
+            pygame.draw.rect(self.screen, (color_r, color_g, color_b), (0, y, SCREEN_WIDTH, 5))
+        
+        # Titre principal
+        title_text = self.font.render("🔥 ARENA COMBAT 🔥", True, (255, 255, 100))
+        title_rect = title_text.get_rect(center=(SCREEN_WIDTH // 2, 150))
+        
+        # Effet d'ombre pour le titre
+        shadow_text = self.font.render("🔥 ARENA COMBAT 🔥", True, (100, 50, 0))
+        shadow_rect = shadow_text.get_rect(center=(title_rect.centerx + 3, title_rect.centery + 3))
+        self.screen.blit(shadow_text, shadow_rect)
+        self.screen.blit(title_text, title_rect)
+        
+        # Sous-titre
+        subtitle_text = self.small_font.render("Configurez votre bataille épique", True, (200, 200, 200))
+        subtitle_rect = subtitle_text.get_rect(center=(SCREEN_WIDTH // 2, 220))
+        self.screen.blit(subtitle_text, subtitle_rect)
+        
+        # Menu principal
+        menu_start_y = 350
+        for i, option in enumerate(self.options):
+            color = (255, 255, 255) if i == self.selected_option else (150, 150, 150)
+            
+            # Texte principal de l'option
+            option_text = option
+            if option == "Balles":
+                option_text = f"⚔️ Combattants: {self.ball_count}"
+            elif option == "Durée":
+                option_text = f"⏰ Durée: {int(self.game_duration)}s"
+            elif option == "Perturbations":
+                option_text = f"🌀 Perturbations: {int(self.disruption_interval)}s"
+            elif option == "Bonus":
+                option_text = f"💎 Bonus: {int(self.bonus_spawn_interval)}s"
+            elif option == "Forme Arène":
+                shape_names = {"hexagon": "Hexagone", "octagon": "Octogone", "diamond": "Diamant"}
+                option_text = f"🏟️ Arène: {shape_names[self.arena_shape]}"
+            elif option == "Commencer":
+                option_text = "🚀 " + option
+            elif option == "Quitter":
+                option_text = "❌ " + option
+            
+            text = self.menu_font.render(option_text, True, color)
+            text_rect = text.get_rect(center=(SCREEN_WIDTH // 2, menu_start_y + i * 80))
+            
+            # Surbrillance de l'option sélectionnée
+            if i == self.selected_option:
+                # Effet de pulsation
+                pulse = math.sin(time.time() * 6) * 0.1 + 0.9
+                scaled_text = pygame.transform.scale(text, 
+                    (int(text.get_width() * pulse), int(text.get_height() * pulse)))
+                scaled_rect = scaled_text.get_rect(center=text_rect.center)
+                
+                # Fond lumineux
+                glow_rect = pygame.Rect(scaled_rect.left - 20, scaled_rect.top - 10, 
+                                      scaled_rect.width + 40, scaled_rect.height + 20)
+                glow_surf = pygame.Surface((glow_rect.width, glow_rect.height), pygame.SRCALPHA)
+                pygame.draw.rect(glow_surf, (50, 100, 255, 100), (0, 0, glow_rect.width, glow_rect.height))
+                self.screen.blit(glow_surf, glow_rect.topleft)
+                
+                self.screen.blit(scaled_text, scaled_rect)
+            else:
+                self.screen.blit(text, text_rect)
+        
+        # Instructions
+        instructions = [
+            "↑↓ Naviguer  ←→ Ajuster  ENTRÉE Sélectionner",
+            "",
+            "Types de Combattants:",
+            "🔥 FEU chasse ❄️ GLACE  •  ❄️ GLACE ralentit",
+            "⚙️ MÉTAL attire le métal  •  ⚡ FOUDRE erratique", 
+            "☠️ POISON empoisonne les proches"
+        ]
+        
+        instructions_start_y = SCREEN_HEIGHT - 250
+        for i, instruction in enumerate(instructions):
+            color = (255, 255, 255) if i == 0 else (180, 180, 180)
+            if i >= 2:  # Info sur les types
+                color = (150, 255, 150)
+            
+            text = self.small_font.render(instruction, True, color)
+            text_rect = text.get_rect(center=(SCREEN_WIDTH // 2, instructions_start_y + i * 30))
+            self.screen.blit(text, text_rect)
+    
+    def get_game_config(self):
+        return {
+            'ball_count': self.ball_count,
+            'game_duration': self.game_duration,
+            'disruption_interval': self.disruption_interval,
+            'bonus_spawn_interval': self.bonus_spawn_interval,
+            'arena_shape': self.arena_shape
+        }
+
+class GameOverScreen:
+    def __init__(self, screen, game_stats):
+        self.screen = screen
+        self.font = pygame.font.Font(None, 72)
+        self.menu_font = pygame.font.Font(None, 48)
+        self.small_font = pygame.font.Font(None, 36)
+        self.stats = game_stats
+        self.selected_option = 0
+        self.options = ["Rejouer", "Menu Principal", "Quitter"]
+        
+    def handle_event(self, event):
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_UP:
+                self.selected_option = (self.selected_option - 1) % len(self.options)
+            elif event.key == pygame.K_DOWN:
+                self.selected_option = (self.selected_option + 1) % len(self.options)
+            elif event.key == pygame.K_RETURN or event.key == pygame.K_SPACE:
+                return self.handle_selection()
+        return None
+    
+    def handle_selection(self):
+        option = self.options[self.selected_option]
+        
+        if option == "Rejouer":
+            return "replay"
+        elif option == "Menu Principal":
+            return "menu"
+        elif option == "Quitter":
+            return "quit"
+        return None
+    
+    def draw(self):
+        # Fond sombre avec particules
+        for y in range(0, SCREEN_HEIGHT, 5):
+            gradient_factor = y / SCREEN_HEIGHT
+            wave = math.sin(time.time() * 1.5 + y * 0.005) * 0.1
+            
+            color_r = max(0, min(255, int(40 * (1 - gradient_factor * 0.4 + wave))))
+            color_g = max(0, min(255, int(20 * (1 - gradient_factor * 0.3 + wave))))
+            color_b = max(0, min(255, int(60 * (1 + gradient_factor * 0.6 + wave))))
+            
+            pygame.draw.rect(self.screen, (color_r, color_g, color_b), (0, y, SCREEN_WIDTH, 5))
+        
+        # Titre
+        title_text = self.font.render("💥 BATAILLE TERMINÉE! 💥", True, (255, 150, 150))
+        title_rect = title_text.get_rect(center=(SCREEN_WIDTH // 2, 150))
+        
+        # Effet d'ombre
+        shadow_text = self.font.render("💥 BATAILLE TERMINÉE! 💥", True, (100, 50, 50))
+        shadow_rect = shadow_text.get_rect(center=(title_rect.centerx + 3, title_rect.centery + 3))
+        self.screen.blit(shadow_text, shadow_rect)
+        self.screen.blit(title_text, title_rect)
+        
+        # Statistiques
+        stats_start_y = 280
+        stat_lines = [
+            f"🏆 Survivants: {self.stats.get('survivors', 0)}",
+            f"⚔️ Combattants de départ: {self.stats.get('initial_balls', 0)}",
+            f"💥 Explosions: {self.stats.get('initial_balls', 0) - self.stats.get('survivors', 0)}",
+            f"⏱️ Durée totale: {self.stats.get('duration', 0):.1f}s",
+            f"🎯 Bonus collectés: {self.stats.get('bonuses_collected', 0)}",
+            f"🌀 Perturbations: {self.stats.get('disruptions_triggered', 0)}"
+        ]
+        
+        for i, stat_line in enumerate(stat_lines):
+            color = (255, 255, 100) if i < 3 else (200, 200, 200)  # Highlight key stats
+            
+            text = self.menu_font.render(stat_line, True, color)
+            text_rect = text.get_rect(center=(SCREEN_WIDTH // 2, stats_start_y + i * 50))
+            self.screen.blit(text, text_rect)
+        
+        # Déterminer le "gagnant" (type de balle le plus représenté)
+        if self.stats.get('survivor_types'):
+            most_common = max(self.stats['survivor_types'], key=self.stats['survivor_types'].get)
+            type_names = {
+                BallType.FIRE: "🔥 FEU",
+                BallType.ICE: "❄️ GLACE", 
+                BallType.METAL: "⚙️ MÉTAL",
+                BallType.LIGHTNING: "⚡ FOUDRE",
+                BallType.POISON: "☠️ POISON"
+            }
+            
+            winner_text = self.menu_font.render(f"🥇 Type dominant: {type_names.get(most_common, 'INCONNU')}", 
+                                              True, (255, 255, 0))
+            winner_rect = winner_text.get_rect(center=(SCREEN_WIDTH // 2, stats_start_y + len(stat_lines) * 50 + 30))
+            self.screen.blit(winner_text, winner_rect)
+        
+        # Menu options
+        menu_start_y = SCREEN_HEIGHT - 300
+        for i, option in enumerate(self.options):
+            color = (255, 255, 255) if i == self.selected_option else (150, 150, 150)
+            
+            option_text = option
+            if option == "Rejouer":
+                option_text = "🔄 " + option
+            elif option == "Menu Principal":
+                option_text = "📋 " + option
+            elif option == "Quitter":
+                option_text = "❌ " + option
+            
+            text = self.menu_font.render(option_text, True, color)
+            text_rect = text.get_rect(center=(SCREEN_WIDTH // 2, menu_start_y + i * 60))
+            
+            # Surbrillance
+            if i == self.selected_option:
+                pulse = math.sin(time.time() * 6) * 0.1 + 0.9
+                scaled_text = pygame.transform.scale(text, 
+                    (int(text.get_width() * pulse), int(text.get_height() * pulse)))
+                scaled_rect = scaled_text.get_rect(center=text_rect.center)
+                
+                glow_rect = pygame.Rect(scaled_rect.left - 20, scaled_rect.top - 10, 
+                                      scaled_rect.width + 40, scaled_rect.height + 20)
+                glow_surf = pygame.Surface((glow_rect.width, glow_rect.height), pygame.SRCALPHA)
+                pygame.draw.rect(glow_surf, (50, 100, 255, 100), (0, 0, glow_rect.width, glow_rect.height))
+                self.screen.blit(glow_surf, glow_rect.topleft)
+                
+                self.screen.blit(scaled_text, scaled_rect)
+            else:
+                self.screen.blit(text, text_rect)
+        
+        # Instructions
+        instruction_text = self.small_font.render("↑↓ Naviguer  ENTRÉE Sélectionner", True, (200, 200, 200))
+        instruction_rect = instruction_text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 50))
+        self.screen.blit(instruction_text, instruction_rect)
 
 class Game:
     def __init__(self):
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-        pygame.display.set_caption("🔥 ARENA COMBAT - TikTok Viral! 🔥")
+        pygame.display.set_caption("🔥 ARENA COMBAT - Battle Royale! 🔥")
         self.clock = pygame.time.Clock()
         
+        # État du jeu
+        self.state = GameState.MENU
+        self.menu = Menu(self.screen)
+        self.game_over_screen = None
+        
+        # Objets du jeu
         self.balls = []
         self.particles = []
         self.disruptions = []
         self.bonuses = []
         self.arena = Arena()
         
-        self.start_time = time.time()
+        # Configuration
+        self.config = {}
+        
+        # Statistiques
+        self.game_stats = {}
+        
+        # Temps
+        self.start_time = 0
         self.last_disruption = 0
         self.last_bonus_spawn = 0
+        self.paused = False
+        
+        # Interface
         self.bg_color = Color(15, 15, 30)
         self.combat_intensity = 0
-        self.shape_change_timer = 0
         
-        # Polices pour le texte
+        # Polices
         self.font = pygame.font.Font(None, 48)
         self.big_font = pygame.font.Font(None, 84)
         self.small_font = pygame.font.Font(None, 36)
         
-        # Création des balles initiales
-        self.spawn_initial_balls()
-    
-    def spawn_initial_balls(self):
+    def start_new_game(self, config):
+        """Démarre une nouvelle partie avec la configuration donnée"""
+        self.config = config
+        self.state = GameState.PLAYING
+        
+        # Réinitialiser les objets
+        self.balls = []
+        self.particles = []
+        self.disruptions = []
+        self.bonuses = []
+        
+        # Configurer l'arène
+        self.arena.shape_type = config['arena_shape']
+        self.arena.generate_shape()
+        
+        # Créer les balles initiales (plus de spawn aléatoire!)
+        self.spawn_initial_balls(config['ball_count'])
+        
+        # Initialiser les temps
+        self.start_time = time.time()
+        self.last_disruption = 0
+        self.last_bonus_spawn = 0
+        
+        # Initialiser les stats
+        self.game_stats = {
+            'initial_balls': config['ball_count'],
+            'bonuses_collected': 0,
+            'disruptions_triggered': 0,
+            'duration': 0,
+            'survivors': 0,
+            'survivor_types': {}
+        }
+        
+    def spawn_initial_balls(self, count):
+        """Spawn les balles au début du jeu uniquement"""
         ball_types = list(BallType)
         arena_center_x = self.arena.center_x
         arena_center_y = self.arena.center_y + 200
         
-        for _ in range(12):
-            # Spawn dans l'arène
-            angle = random.uniform(0, 2 * math.pi)
-            radius = random.uniform(50, 200)
-            x = arena_center_x + radius * math.cos(angle)
-            y = arena_center_y + radius * math.sin(angle)
-            
-            ball_type = random.choice(ball_types)
-            self.balls.append(Ball(x, y, ball_type))
+        for _ in range(count):
+            # Spawn dans l'arène de façon plus contrôlée
+            attempts = 0
+            while attempts < 20:  # Éviter les boucles infinies
+                angle = random.uniform(0, 2 * math.pi)
+                radius = random.uniform(50, 200)
+                x = arena_center_x + radius * math.cos(angle)
+                y = arena_center_y + radius * math.sin(angle)
+                
+                # Vérifier que la position est valide
+                if self.arena.is_point_inside(x, y):
+                    ball_type = random.choice(ball_types)
+                    self.balls.append(Ball(x, y, ball_type))
+                    break
+                attempts += 1
     
     def spawn_bonus(self):
-        # Spawn un bonus dans l'arène
+        """Spawn un bonus dans l'arène"""
         arena_center_x = self.arena.center_x
         arena_center_y = self.arena.center_y + 200
         
-        angle = random.uniform(0, 2 * math.pi)
-        radius = random.uniform(80, 250)
-        x = arena_center_x + radius * math.cos(angle)
-        y = arena_center_y + radius * math.sin(angle)
-        
-        bonus_types = list(BonusType)
-        bonus_type = random.choice(bonus_types)
-        self.bonuses.append(Bonus(x, y, bonus_type))
+        attempts = 0
+        while attempts < 10:
+            angle = random.uniform(0, 2 * math.pi)
+            radius = random.uniform(80, 250)
+            x = arena_center_x + radius * math.cos(angle)
+            y = arena_center_y + radius * math.sin(angle)
+            
+            if self.arena.is_point_inside(x, y):
+                bonus_types = list(BonusType)
+                bonus_type = random.choice(bonus_types)
+                self.bonuses.append(Bonus(x, y, bonus_type))
+                break
+            attempts += 1
     
     def add_disruption(self):
+        """Ajoute une perturbation (mais plus de balles aléatoires!)"""
         disruption_types = ["gravity_flip", "magnetic_field", "speed_boost", "chaos", "shape_morph"]
         disruption_type = random.choice(disruption_types)
         duration = random.uniform(4, 10)
@@ -751,22 +1157,12 @@ class Game:
             duration = 15.0  # Plus long pour que ce soit visible
         
         self.disruptions.append(Disruption(disruption_type, duration))
+        self.game_stats['disruptions_triggered'] += 1
         
-        # Ajouter des balles supplémentaires parfois
-        if random.random() < 0.4:
-            for _ in range(random.randint(2, 4)):
-                arena_center_x = self.arena.center_x
-                arena_center_y = self.arena.center_y + 200
-                angle = random.uniform(0, 2 * math.pi)
-                radius = random.uniform(50, 180)
-                x = arena_center_x + radius * math.cos(angle)
-                y = arena_center_y + radius * math.sin(angle)
-                
-                ball_type = random.choice(list(BallType))
-                self.balls.append(Ball(x, y, ball_type))
+        # PAS DE BALLES SUPPLÉMENTAIRES - c'était le comportement indésirable!
     
     def handle_bonus_effects(self):
-        # Gérer les effets spéciaux des bonus collectés
+        """Gérer les effets spéciaux des bonus collectés"""
         for ball in self.balls[:]:
             for bonus in self.bonuses[:]:
                 if bonus.check_collision(ball):
@@ -789,9 +1185,10 @@ class Game:
                         ))
                     
                     self.bonuses.remove(bonus)
+                    self.game_stats['bonuses_collected'] += 1
     
     def update_background_intensity(self):
-        # Calculer l'intensité basée sur le nombre de balles, particules et bonus
+        """Calculer l'intensité basée sur le nombre de balles, particules et bonus"""
         ball_count = len(self.balls)
         particle_count = len(self.particles)
         bonus_count = len(self.bonuses)
@@ -804,9 +1201,98 @@ class Game:
         intense_color = Color(80, 30, 60)  # Plus violet/rouge pour l'intensité
         self.bg_color = base_color.lerp(intense_color, self.combat_intensity)
     
+    def update_game_logic(self, dt, elapsed_time):
+        """Logique principale du jeu"""
+        # Vérifier la fin du jeu
+        if elapsed_time >= self.config['game_duration']:
+            self.end_game()
+            return
+        
+        # Ajouter des perturbations
+        if elapsed_time - self.last_disruption >= self.config['disruption_interval']:
+            self.add_disruption()
+            self.last_disruption = elapsed_time
+        
+        # Spawn des bonus
+        if elapsed_time - self.last_bonus_spawn >= self.config['bonus_spawn_interval']:
+            self.spawn_bonus()
+            self.last_bonus_spawn = elapsed_time
+        
+        # Mise à jour des bonus
+        self.bonuses = [b for b in self.bonuses if b.update(dt)]
+        self.handle_bonus_effects()
+        
+        # Mise à jour des balles
+        dead_balls = []
+        for ball in self.balls[:]:
+            ball.update(dt, self.balls, self.particles, self.disruptions, self.arena)
+            if ball.health <= 0:
+                ball.explode(self.particles)
+                dead_balls.append(ball)
+        
+        for ball in dead_balls:
+            self.balls.remove(ball)
+        
+        # Mise à jour des particules
+        self.particles = [p for p in self.particles if p.update(dt)]
+        
+        # Nettoyer les perturbations expirées
+        self.disruptions = [d for d in self.disruptions if d.is_active()]
+        
+        # Mise à jour de l'intensité du fond
+        self.update_background_intensity()
+    
+    def end_game(self):
+        """Terminer le jeu et calculer les statistiques"""
+        self.state = GameState.GAME_OVER
+        
+        # Calculer les statistiques finales
+        self.game_stats['duration'] = time.time() - self.start_time
+        self.game_stats['survivors'] = len(self.balls)
+        
+        # Compter les types de survivants
+        survivor_types = {}
+        for ball in self.balls:
+            if ball.type in survivor_types:
+                survivor_types[ball.type] += 1
+            else:
+                survivor_types[ball.type] = 1
+        self.game_stats['survivor_types'] = survivor_types
+        
+        # Créer l'écran de fin
+        self.game_over_screen = GameOverScreen(self.screen, self.game_stats)
+        
+        # Explosion finale
+        self.final_explosion()
+    
+    def final_explosion(self):
+        """Explosion finale spectaculaire"""
+        for ball in self.balls:
+            for _ in range(50):  # Plus de particules
+                self.particles.append(Particle(
+                    ball.x,
+                    ball.y,
+                    random.uniform(-800, 800),
+                    random.uniform(-800, 800),
+                    ball.color,
+                    random.uniform(3.0, 8.0)  # Durée plus longue
+                ))
+        
+        # Explosion des bonus restants
+        for bonus in self.bonuses:
+            for _ in range(20):
+                self.particles.append(Particle(
+                    bonus.x,
+                    bonus.y,
+                    random.uniform(-500, 500),
+                    random.uniform(-500, 500),
+                    bonus.color,
+                    random.uniform(2.0, 5.0)
+                ))
+    
     def draw_hud(self, elapsed_time):
-        # Interface utilisateur améliorée
-        remaining_time = max(0, GAME_DURATION - elapsed_time)
+        """Interface utilisateur pendant le jeu"""
+        remaining_time = max(0, self.config['game_duration'] - elapsed_time)
         
         # Temps restant avec style
         time_color = (255, 255, 255)
@@ -852,6 +1338,10 @@ class Game:
         shape_text = self.small_font.render(f"🏟️ ARÈNE: {shape_name}", True, (150, 200, 255))
         self.screen.blit(shape_text, (30, stats_y + 130))
         
+        # Pause instruction
+        pause_text = self.small_font.render("P: Pause  ESC: Menu", True, (180, 180, 180))
+        self.screen.blit(pause_text, (30, stats_y + 170))
+        
         # Indicateur de perturbation active
         if self.disruptions:
             disruption_names = {
@@ -877,7 +1367,7 @@ class Game:
                 self.screen.blit(scaled_surface, scaled_rect)
     
     def draw_legend(self):
-        # Légende des types de balles
+        """Légende des types de balles"""
         legend_x = SCREEN_WIDTH - 280
         legend_y = 30
         
@@ -926,127 +1416,8 @@ class Game:
             self.screen.blit(bonus_text, (legend_x, bonus_legend_y + y_offset))
             y_offset += 25
     
-    def run(self):
-        running = True
-        
-        while running:
-            dt = self.clock.tick(FPS) / 1000.0
-            current_time = time.time()
-            elapsed_time = current_time - self.start_time
-            
-            # Événements
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    running = False
-                elif event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_ESCAPE:
-                        running = False
-                    elif event.key == pygame.K_SPACE:
-                        # Changer la forme manuellement (pour le debug)
-                        shapes = ["hexagon", "octagon", "diamond"]
-                        current_idx = shapes.index(self.arena.shape_type)
-                        self.arena.shape_type = shapes[(current_idx + 1) % len(shapes)]
-                        self.arena.generate_shape()
-            
-            # Fin du jeu après 61 secondes
-            if elapsed_time >= GAME_DURATION:
-                self.final_explosion()
-                pygame.time.wait(3000)
-                running = False
-                continue
-            
-            # Ajouter des perturbations
-            if elapsed_time - self.last_disruption >= DISRUPTION_INTERVAL:
-                self.add_disruption()
-                self.last_disruption = elapsed_time
-            
-            # Spawn des bonus
-            if elapsed_time - self.last_bonus_spawn >= BONUS_SPAWN_INTERVAL:
-                self.spawn_bonus()
-                self.last_bonus_spawn = elapsed_time
-            
-            # Mise à jour des bonus
-            self.bonuses = [b for b in self.bonuses if b.update(dt)]
-            self.handle_bonus_effects()
-            
-            # Mise à jour des balles
-            dead_balls = []
-            for ball in self.balls[:]:
-                ball.update(dt, self.balls, self.particles, self.disruptions, self.arena)
-                if ball.health <= 0:
-                    ball.explode(self.particles)
-                    dead_balls.append(ball)
-            
-            for ball in dead_balls:
-                self.balls.remove(ball)
-            
-            # Mise à jour des particules
-            self.particles = [p for p in self.particles if p.update(dt)]
-            
-            # Nettoyer les perturbations expirées
-            self.disruptions = [d for d in self.disruptions if d.is_active()]
-            
-            # Mise à jour de l'intensité du fond
-            self.update_background_intensity()
-            
-            # Rendu
-            self.draw(elapsed_time)
-        
-        pygame.quit()
-    
-    def final_explosion(self):
-        # Explosion finale ultra-spectaculaire
-        for ball in self.balls:
-            for _ in range(50):  # Plus de particules
-                self.particles.append(Particle(
-                    ball.x,
-                    ball.y,
-                    random.uniform(-800, 800),
-                    random.uniform(-800, 800),
-                    ball.color,
-                    random.uniform(3.0, 8.0)  # Durée plus longue
-                ))
-        
-        # Explosion des bonus restants
-        for bonus in self.bonuses:
-            for _ in range(20):
-                self.particles.append(Particle(
-                    bonus.x,
-                    bonus.y,
-                    random.uniform(-500, 500),
-                    random.uniform(-500, 500),
-                    bonus.color,
-                    random.uniform(2.0, 5.0)
-                ))
-        
-        # Effet de flash white plus long
-        for alpha in [255, 200, 150, 100, 50]:
-            flash_surf = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
-            flash_surf.fill((255, 255, 255))
-            flash_surf.set_alpha(alpha)
-            
-            # Dessiner le frame avec le flash
-            self.draw_background()
-            self.arena.draw(self.screen)
-            
-            for particle in self.particles:
-                particle.draw(self.screen)
-                
-            self.screen.blit(flash_surf, (0, 0))
-            
-            # Texte final
-            final_text = self.big_font.render("💥 EXPLOSION FINALE! 💥", True, (255, 0, 0))
-            text_rect = final_text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2))
-            self.screen.blit(final_text, text_rect)
-            
-            pygame.display.flip()
-            pygame.time.wait(200)
-        
-        self.balls.clear()
-        self.bonuses.clear()
-    
     def draw_background(self):
-        # Fond dégradé amélioré
+        """Fond dégradé amélioré"""
         for y in range(0, SCREEN_HEIGHT, 3):  # Optimisation
             gradient_factor = y / SCREEN_HEIGHT
             
@@ -1059,7 +1430,8 @@ class Game:
             
             pygame.draw.rect(self.screen, (color_r, color_g, color_b), (0, y, SCREEN_WIDTH, 3))
     
-    def draw(self, elapsed_time):
+    def draw_game(self, elapsed_time):
+        """Dessiner le jeu en cours"""
         # Fond dégradé avec effet
         self.draw_background()
         
@@ -1083,7 +1455,7 @@ class Game:
         self.draw_legend()
         
         # Effet de fin de jeu
-        remaining_time = max(0, GAME_DURATION - elapsed_time)
+        remaining_time = max(0, self.config['game_duration'] - elapsed_time)
         if remaining_time < 10:
             warning_size = int(84 + math.sin(elapsed_time * 15) * 30)
             warning_font = pygame.font.Font(None, warning_size)
@@ -1102,7 +1474,79 @@ class Game:
             self.screen.blit(shadow_text, shadow_rect)
             self.screen.blit(warning_text, text_rect)
         
-        pygame.display.flip()
+        # Indication de pause
+        if self.paused:
+            pause_surf = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+            pause_surf.fill((0, 0, 0, 100))
+            self.screen.blit(pause_surf, (0, 0))
+            
+            pause_text = self.big_font.render("⏸️ PAUSE", True, (255, 255, 255))
+            pause_rect = pause_text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2))
+            self.screen.blit(pause_text, pause_rect)
+            
+            resume_text = self.font.render("Appuyez sur P pour reprendre", True, (200, 200, 200))
+            resume_rect = resume_text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 80))
+            self.screen.blit(resume_text, resume_rect)
+    
+    def run(self):
+        """Boucle principale du jeu"""
+        running = True
+        
+        while running:
+            dt = self.clock.tick(FPS) / 1000.0
+            
+            # Événements
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+                
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        if self.state == GameState.PLAYING:
+                            self.state = GameState.MENU
+                        elif self.state == GameState.GAME_OVER:
+                            self.state = GameState.MENU
+                        
+                    elif event.key == pygame.K_p and self.state == GameState.PLAYING:
+                        self.paused = not self.paused
+                
+                # Gestion des événements selon l'état
+                if self.state == GameState.MENU:
+                    result = self.menu.handle_event(event)
+                    if result == "start_game":
+                        config = self.menu.get_game_config()
+                        self.start_new_game(config)
+                    elif result == "quit":
+                        running = False
+                        
+                elif self.state == GameState.GAME_OVER and self.game_over_screen:
+                    result = self.game_over_screen.handle_event(event)
+                    if result == "replay":
+                        self.start_new_game(self.config)
+                    elif result == "menu":
+                        self.state = GameState.MENU
+                    elif result == "quit":
+                        running = False
+            
+            # Mise à jour selon l'état
+            if self.state == GameState.PLAYING and not self.paused:
+                current_time = time.time()
+                elapsed_time = current_time - self.start_time
+                self.update_game_logic(dt, elapsed_time)
+            
+            # Rendu selon l'état
+            if self.state == GameState.MENU:
+                self.menu.draw()
+            elif self.state == GameState.PLAYING:
+                current_time = time.time()
+                elapsed_time = current_time - self.start_time
+                self.draw_game(elapsed_time)
+            elif self.state == GameState.GAME_OVER and self.game_over_screen:
+                self.game_over_screen.draw()
+            
+            pygame.display.flip()
+        
+        pygame.quit()
 
 if __name__ == "__main__":
     game = Game()
